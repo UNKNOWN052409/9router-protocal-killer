@@ -2,176 +2,219 @@
 /**
  * 9router Protocol Killer — Watchdog
  *
- * Scans 9router files for the "CRITICAL: CHUNKED WRITE PROTOCOL (MANDATORY)"
- * and removes it. In watch mode, monitors for changes and auto-removes it.
+ * Cross-platform watchdog that detects files containing the
+ * "CRITICAL: CHUNKED WRITE PROTOCOL (MANDATORY)" text and DELETES them.
+ *
+ * Works on: Windows, macOS, Linux
  */
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-// Patterns that identify the chunked write protocol
-const PROTOCOL_PATTERNS = [
+// === PATTERNS ===
+
+const PROTOCOL_SIGNATURES = [
   /CRITICAL:\s*CHUNKED\s*WRITE\s*PROTOCOL/i,
+  /CHUNKED\s*WRITE\s*PROTOCOL\s*\(MANDATORY\)/i,
   /MAXIMUM\s+350\s+LINES/i,
-  /CHUNKED\s*WRITE\s*STRATEGY/i,
+  /MANDATORY\s+CHUNKED\s+WRITE\s+STRATEGY/i,
 ];
 
-// Platform-specific 9router install paths to scan
+// === CROSS-PLATFORM 9ROUTER PATH DETECTION ===
+
 function get9routerPaths() {
   const paths = new Set();
 
-  // Global npm installation
+  // Windows: npm global
   if (process.platform === 'win32') {
-    paths.add(path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'npm', 'node_modules', '9router'));
-  } else {
-    // Unix: check common npm global locations
-    paths.add('/usr/local/lib/node_modules/9router');
-    paths.add('/usr/lib/node_modules/9router');
-    paths.add(path.join(os.homedir(), '.npm-global', 'lib', 'node_modules', '9router'));
-    paths.add(path.join(os.homedir(), '.nvm', 'versions', 'node', '*', 'lib', 'node_modules', '9router'));
-  }
-
-  // Also check npx/pnpm/yarn paths
-  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    paths.add(path.join(appData, 'npm', 'node_modules', '9router'));
+    // pnpm store on Windows
     const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
     paths.add(path.join(localAppData, 'pnpm', 'global', '5', 'node_modules', '9router'));
   }
 
-  // Check the user's current installation
-  const current = 'C:\\Users\\Unkno\\AppData\\Roaming\\npm\\node_modules\\9router';
-  if (fs.existsSync(current)) paths.add(current);
+  // macOS / Linux: common npm global locations
+  const unixPaths = [
+    '/usr/local/lib/node_modules/9router',
+    '/usr/lib/node_modules/9router',
+    path.join(os.homedir(), '.npm-global', 'lib', 'node_modules', '9router'),
+    path.join(os.homedir(), '.local', 'share', 'node_modules', '9router'),
+    path.join(os.homedir(), 'node_modules', '9router'),
+  ];
+  for (const p of unixPaths) {
+    paths.add(p);
+  }
 
+  // nvm paths on Unix
+  if (process.platform !== 'win32') {
+    const nvmRoot = process.env.NVM_DIR || path.join(os.homedir(), '.nvm');
+    try {
+      const versions = fs.readdirSync(path.join(nvmRoot, 'versions', 'node'));
+      for (const v of versions) {
+        paths.add(path.join(nvmRoot, 'versions', 'node', v, 'lib', 'node_modules', '9router'));
+      }
+    } catch {}
+  }
+
+  // asdf / fnm / mise version managers
+  try {
+    const asdfData = process.env.ASDF_DATA_DIR || path.join(os.homedir(), '.asdf');
+    paths.add(path.join(asdfData, 'installs', 'node', '*', '.npm', 'lib', 'node_modules', '9router'));
+  } catch {}
+
+  // Volta
+  try {
+    const voltaRoot = process.env.VOLTA_HOME || path.join(os.homedir(), '.volta');
+    paths.add(path.join(voltaRoot, 'tools', 'image', 'node_modules', '9router'));
+  } catch {}
+
+  // Docker: check common mounted paths
+  if (fs.existsSync('/app/node_modules/9router')) paths.add('/app/node_modules/9router');
+  if (fs.existsSync('/app/data/node_modules/9router')) paths.add('/app/data/node_modules/9router');
+
+  // Filter to only existing paths
   return [...paths].filter(p => fs.existsSync(p));
 }
 
-// Find all .js files in a 9router install
-function findTargetFiles(basePath) {
-  const results = [];
-  const dirs = [
-    'app/.next-cli-build/server/chunks',
-    'app/.next/server/chunks',
-    'app/src',
-    'src',
-  ];
+// === FILE DISCOVERY ===
 
-  for (const dir of dirs) {
-    const fullPath = path.join(basePath, dir);
-    if (!fs.existsSync(fullPath)) continue;
+function findJsFiles(dirPath, maxDepth = 10) {
+  const results = [];
+  const queue = [{ dir: dirPath, depth: 0 }];
+  const seen = new Set();
+
+  while (queue.length > 0) {
+    const { dir, depth } = queue.shift();
+    if (depth > maxDepth) continue;
+    if (!fs.existsSync(dir)) continue;
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+
+    let entries;
     try {
-      const files = fs.readdirSync(fullPath, { recursive: true })
-        .filter(f => f.endsWith('.js'))
-        .map(f => path.join(fullPath, f));
-      results.push(...files);
+      entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
-      // recursive not available in older Node — fallback
-      try {
-        const walk = (dir) => {
-          const entries = fs.readdirSync(dir, { withFileTypes: true });
-          for (const entry of entries) {
-            const full = path.join(dir, entry.name);
-            if (entry.isDirectory()) walk(full);
-            else if (entry.name.endsWith('.js')) results.push(full);
-          }
-        };
-        walk(fullPath);
-      } catch {}
+      continue;
+    }
+
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
+          queue.push({ dir: full, depth: depth + 1 });
+        }
+      } else if (entry.name.endsWith('.js')) {
+        results.push(full);
+      }
     }
   }
 
-  // Also scan the base dir for .js files
-  try {
-    const walk = (dir, depth = 0) => {
-      if (depth > 5) return;
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') walk(full, depth + 1);
-        else if (entry.name.endsWith('.js')) results.push(full);
-      }
-    };
-    walk(basePath);
-  } catch {}
+  return results;
+}
+
+function findTargetFiles(basePath) {
+  const results = [];
+
+  // Priority directories (where the protocol typically lives)
+  const priorityDirs = [
+    'app/.next-cli-build/server/chunks',
+    'app/.next/server/chunks',
+    'app/.next-cli-build',
+    'app/src',
+    'app',
+    'src',
+  ];
+
+  for (const dir of priorityDirs) {
+    const full = path.join(basePath, dir);
+    if (fs.existsSync(full)) {
+      results.push(...findJsFiles(full));
+    }
+  }
+
+  // If nothing found, scan the whole base
+  if (results.length === 0) {
+    results.push(...findJsFiles(basePath));
+  }
 
   return [...new Set(results)];
 }
 
-// Check if a file contains protocol patterns
+// === DETECTION ===
+
 function hasProtocol(content) {
-  return PROTOCOL_PATTERNS.some(p => p.test(content));
+  return PROTOCOL_SIGNATURES.some(sig => sig.test(content));
 }
 
-// Remove the protocol from file content
-function removeProtocol(content) {
-  // Pattern 1: `let i=\`...protocol...\`.trim();` → `let i=\`\`.trim();`
-  const result1 = content.replace(
-    /let\s+i\s*=\s*`[\s\S]*?CRITICAL:\s*CHUNKED\s*WRITE\s*PROTOCOL[\s\S]*?REMEMBER:[\s\S]*?`\s*\.trim\s*\(\s*\)\s*;?\s*/i,
-    'let i=``.trim();'
-  );
-
-  if (result1 !== content) return result1;
-
-  // Pattern 2: Alternative formatting
-  const result2 = content.replace(
-    /let\s+i\s*=\s*`[\s\S]*?CRITICAL:\s*CHUNKED\s*WRITE[\s\S]*?`\s*\.trim\s*\(\s*\)\s*/i,
-    'let i=``.trim()'
-  );
-
-  if (result2 !== content) return result2;
-
-  // Pattern 3: Generic - any backtick string containing "350 LINES"
-  const result3 = content.replace(
-    /let\s+i\s*=\s*`[\s\S]*?350\s*LINES[\s\S]*?`\s*\.trim\s*\(\s*\)\s*/i,
-    'let i=``.trim()'
-  );
-
-  if (result3 !== content) return result3;
-
-  // Pattern 4: Embedded as a string somewhere else
-  const result4 = content.replace(
-    /# CRITICAL: CHUNKED WRITE PROTOCOL[\s\S]*?REMEMBER: When in doubt, write LESS per operation\./g,
-    ''
-  );
-
-  return result4;
-}
-
-// Stats tracking
-const stats = { scanned: 0, infected: 0, cleaned: 0, errors: 0 };
-
-// Scan and clean a single file
-function scanFile(filePath, dryRun = false) {
-  stats.scanned++;
+function isInfected(filePath) {
   try {
-    let content = fs.readFileSync(filePath, 'utf8');
-    if (!hasProtocol(content)) return false;
-
-    stats.infected++;
-    if (dryRun) {
-      console.log(`  [FOUND] ${filePath}`);
-      return true;
-    }
-
-    const cleaned = removeProtocol(content);
-    if (cleaned === content) {
-      console.log(`  [SKIP]  ${filePath} — could not remove protocol (unknown format)`);
-      return false;
-    }
-
-    fs.writeFileSync(filePath, cleaned, 'utf8');
-    stats.cleaned++;
-    console.log(`  [CLEAN] ${filePath}`);
-    return true;
-  } catch (err) {
-    stats.errors++;
-    console.error(`  [ERROR] ${filePath}: ${err.message}`);
+    const stat = fs.statSync(filePath);
+    // Skip empty files or huge ones (>50MB)
+    if (stat.size === 0 || stat.size > 50 * 1024 * 1024) return false;
+    const content = fs.readFileSync(filePath, 'utf8');
+    return hasProtocol(content);
+  } catch {
     return false;
   }
 }
 
-// Scan all 9router installations
+// === DELETE THE INFECTED FILE ===
+
+function deleteFile(filePath) {
+  try {
+    fs.unlinkSync(filePath);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+// === STATS ===
+
+const stats = { scanned: 0, infected: 0, deleted: 0, errors: 0 };
+
+// === SCAN & DELETE ===
+
+function scanAndDelete(basePath, dryRun = false) {
+  const files = findTargetFiles(basePath);
+  let found = false;
+
+  for (const file of files) {
+    stats.scanned++;
+    if (!isInfected(file)) continue;
+
+    stats.infected++;
+    found = true;
+
+    if (dryRun) {
+      console.log(`  [FOUND] ${file}`);
+      continue;
+    }
+
+    try {
+      if (deleteFile(file)) {
+        stats.deleted++;
+        console.log(`  [DELETED] ${file}`);
+      } else {
+        stats.errors++;
+        console.error(`  [ERROR] Could not delete: ${file}`);
+      }
+    } catch (err) {
+      stats.errors++;
+      console.error(`  [ERROR] ${file}: ${err.message}`);
+    }
+  }
+
+  return found;
+}
+
+// === INSTALLATION-LEVEL SCAN ===
+
 function scanAll(dryRun = false) {
   const installs = get9routerPaths();
+
   if (installs.length === 0) {
     console.log('No 9router installations found.');
     return;
@@ -185,61 +228,71 @@ function scanAll(dryRun = false) {
 
   for (const inst of installs) {
     console.log(`Scanning: ${inst}`);
-    const files = findTargetFiles(inst);
-    for (const file of files) {
-      scanFile(file, dryRun);
-    }
+    scanAndDelete(inst, dryRun);
   }
 
   console.log('');
   console.log('=== Summary ===');
   console.log(`  Scanned:  ${stats.scanned} files`);
   console.log(`  Infected: ${stats.infected} files`);
-  console.log(`  Cleaned:  ${stats.cleaned} files`);
+  console.log(`  Deleted:  ${stats.deleted} files`);
   console.log(`  Errors:   ${stats.errors} files`);
+
+  if (stats.infected > 0 && stats.deleted === stats.infected && stats.errors === 0) {
+    console.log('\nAll infected files have been eliminated.');
+  }
 }
 
-// === Watch Mode ===
+// === WATCH MODE ===
 
 function watchMode(interval = 30000) {
   console.log(`Starting watchdog (poll every ${interval / 1000}s)...`);
+  console.log('Monitoring for reappearance of the chunked write protocol.');
+  console.log('Infected files will be deleted automatically.');
   console.log('Press Ctrl+C to stop.\n');
 
-  // Do an initial scan
-  scanAll(false);
+  // Initial sweep
+  const installs = get9routerPaths();
+  for (const inst of installs) {
+    scanAndDelete(inst);
+  }
+  console.log('[WATCH] Initial sweep complete. Watching for changes...\n');
 
-  // Poll for changes
+  // Poll loop
   const pollInterval = setInterval(() => {
     const installs = get9routerPaths();
-    let changed = false;
+    let foundAny = false;
 
     for (const inst of installs) {
       const files = findTargetFiles(inst);
       for (const file of files) {
         try {
-          const content = fs.readFileSync(file, 'utf8');
-          if (hasProtocol(content)) {
+          if (isInfected(file)) {
             console.log(`[WATCH] Protocol detected in: ${file}`);
-            const cleaned = removeProtocol(content);
-            if (cleaned !== content) {
-              fs.writeFileSync(file, cleaned, 'utf8');
-              console.log(`[WATCH] Protocol removed from: ${file}`);
-              changed = true;
+            if (deleteFile(file)) {
+              console.log(`[WATCH] Deleted: ${file}`);
+              foundAny = true;
+            } else {
+              console.error(`[WATCH] Failed to delete: ${file}`);
             }
           }
         } catch {}
       }
     }
 
-    if (changed) {
-      console.log('[WATCH] All cleaned.\n');
+    if (foundAny) {
+      console.log('[WATCH] All clean.\n');
     }
   }, interval);
 
-  // Handle cleanup
   process.on('SIGINT', () => {
     clearInterval(pollInterval);
     console.log('\nWatchdog stopped.');
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', () => {
+    clearInterval(pollInterval);
     process.exit(0);
   });
 }
@@ -249,17 +302,21 @@ function watchMode(interval = 30000) {
 function printHelp() {
   console.log(`
 9router Protocol Killer — Watchdog
+====================================
+Deletes files containing the "CRITICAL: CHUNKED WRITE PROTOCOL" text.
 
 Usage:
-  node watchdog.js --scan        One-time scan and clean
-  node watchdog.js --watch       Persistent watch mode (polls every 30s)
-  node watchdog.js --dry-run     Scan without modifying files
-  node watchdog.js --path ./dir  Specify a custom 9router path
+  node watchdog.js --scan        Scan and delete infected files
+  node watchdog.js --watch       Watch mode (polls every 30s)
+  node watchdog.js --dry-run     Scan without deleting
+  node watchdog.js --path <dir>  Scan a specific directory
   node watchdog.js --help        Show this help
 
 Options:
-  --interval <ms>  Polling interval in ms (default: 30000, watch mode only)
-  --path <dir>     Scan a specific directory instead of auto-detecting
+  --interval <ms>   Poll interval in ms (watch mode, default: 30000)
+  --path <dir>      Scan a specific directory instead of auto-detecting
+
+Cross-platform: Works on Windows, macOS, and Linux.
   `);
 }
 
@@ -274,11 +331,12 @@ function main() {
   if (args.includes('--path')) {
     const idx = args.indexOf('--path');
     const customPath = args[idx + 1];
-    if (!customPath) {
-      console.error('Error: --path requires a directory argument');
+    const origGet = get9routerPaths;
+    get9routerPaths = () => {
+      if (fs.existsSync(customPath)) return [customPath];
+      console.error(`Error: path not found: ${customPath}`);
       process.exit(1);
-    }
-    addCustomPath(customPath);
+    };
   }
 
   const dryRun = args.includes('--dry-run');
@@ -290,17 +348,6 @@ function main() {
   } else {
     scanAll(dryRun);
   }
-}
-
-function addCustomPath(p) {
-  const exists = fs.existsSync(p);
-  if (!exists) {
-    console.error(`Error: path not found: ${p}`);
-    process.exit(1);
-  }
-  // Override the auto-detection
-  const orig = get9routerPaths;
-  get9routerPaths = () => [p];
 }
 
 main();
