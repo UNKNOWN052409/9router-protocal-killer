@@ -1,266 +1,207 @@
+#!/usr/bin/env node
 "use strict";
 
 /**
- * 9Router Protocol Killer - System Service Wrapper
+ * 9Router Protocol Killer - Auto-Start Service
  *
- * Cross-platform service wrapper that manages the watchdog as a system service.
- * Handles installation, startup, and service management across platforms.
+ * Installs the watchdog to start automatically when you log in.
+ * Uses the Windows Startup folder (no admin required).
  */
 
 const path = require('path');
 const fs = require('fs');
 const { execSync } = require('child_process');
 
-class ServiceWrapper {
-  constructor(options = {}) {
-    this.options = {
-      // Legacy compatibility - keep short for service integration
-      command: 'node',
-      script: '../watchdog.js',
-      args: '--watch',
-      ...options
-    };
+const WATCHDOG_SCRIPT = path.join(__dirname, '..', 'watchdog.js');
 
-    this.isInstalled = false;
-    this.isRunning = false;
+class AutoStartService {
+  constructor() {
+    this.isWindows = process.platform === 'win32';
+    this.isMac = process.platform === 'darwin';
+    this.isLinux = process.platform === 'linux';
   }
 
+  // === INSTALL ===
   async install() {
-    switch (process.platform) {
-      case 'win32':
-        await this.installWindowsService();
-        break;
-      case 'darwin':
-        await this.installMacOSService();
-        break;
-      case 'linux':
-        await this.installLinuxService();
-        break;
-      default:
-        throw new Error(`Platform ${process.platform} not supported for service installation`);
+    console.log('🔧 Installing auto-start service...\n');
+
+    if (this.isWindows) {
+      this.installWindows();
+    } else if (this.isMac) {
+      this.installMac();
+    } else if (this.isLinux) {
+      this.installLinux();
+    } else {
+      console.error('❌ Unsupported platform:', process.platform);
+      process.exit(1);
     }
 
-    this.isInstalled = true;
-    console.log('Service installed successfully');
+    console.log('\n✅ Auto-start installed!');
+    console.log('   The watchdog will start when you log in.');
   }
 
+  // === UNINSTALL ===
   async uninstall() {
-    switch (process.platform) {
-      case 'win32':
-        await this.uninstallWindowsService();
-        break;
-      case 'darwin':
-        await this.uninstallMacOSService();
-        break;
-      case 'linux':
-        await this.uninstallLinuxService();
-        break;
-      default:
-        throw new Error(`Platform ${process.platform} not supported for service uninstallation`);
+    console.log('🗑️  Removing auto-start service...\n');
+
+    if (this.isWindows) {
+      this.uninstallWindows();
+    } else if (this.isMac) {
+      this.uninstallMac();
+    } else if (this.isLinux) {
+      this.uninstallLinux();
     }
 
-    this.isInstalled = false;
-    console.log('Service uninstalled successfully');
+    console.log('\n✅ Auto-start removed!');
   }
 
-  async start() {
-    if (this.isRunning) {
-      console.log('Service is already running');
-      return;
+  // === STATUS ===
+  status() {
+    console.log('📊 Auto-Start Status\n');
+
+    if (this.isWindows) {
+      this.statusWindows();
+    } else if (this.isMac) {
+      this.statusMac();
+    } else if (this.isLinux) {
+      this.statusLinux();
     }
 
-    console.log('Starting service...');
-
-    const commandArgs = [
-      this.options.command,
-      path.join(__dirname, this.options.script),
-      ...this.options.args.split(' ')
-    ];
-
+    // Check if watchdog process is running
+    console.log('\n🔍 Running watchdog processes:');
     try {
-      const child = require('child_process').spawn(
-        commandArgs[0],
-        commandArgs.slice(1),
-        {
-          stdio: 'inherit',
-          detached: true,
-          cwd: this.options.workingDirectory || process.cwd()
-        }
-      );
-      // Store child process reference for management
-      this.childProcess = child;
-      this.isRunning = true;
+      const ps = this.isWindows
+        ? execSync('tasklist /FI "IMAGENAME eq node.exe" /FO LIST', { encoding: 'utf8' })
+        : execSync('ps aux | grep watchdog', { encoding: 'utf8' });
 
-      child.on('close', (code) => {
-        this.isRunning = false;
-        if (code !== 0) {
-          console.log(`Service exited with code ${code}`);
-        }
-      });
-      console.log(`Service started (PID: ${child.pid})`);
-    } catch (error) {
-      console.error('Failed to start service:', error.message);
-      throw error;
-    }
-  }
-
-  async stop() {
-    if (!this.isRunning || !this.childProcess) {
-      console.log('Service is not running');
-      return;
-    }
-
-    console.log('Stopping service...');
-
-    try {
-      this.childProcess.kill('SIGTERM');
-      await this.waitForProcessExit();
-      this.isRunning = false;
-      console.log('Service stopped successfully');
-    } catch (error) {
-      console.error('Failed to stop service:', error.message);
-      throw error;
-    }
-  }
-
-  async waitForProcessExit(timeout = 10000) {
-    return new Promise((resolve, reject) => {
-      if (!this.childProcess) {
-        resolve();
-        return;
-      }
-
-      const timeoutId = setTimeout(() => {
-        reject(new Error('Timeout waiting for service to stop'));
-      }, timeout);
-
-      this.childProcess.once('close', (code) => {
-        clearTimeout(timeoutId);
-        resolve(code);
-      });
-    });
-  }
-
-  getStatus() {
-    return {
-      isInstalled: this.isInstalled,
-      isRunning: this.isRunning,
-      platform: process.platform
-    };
-  }
-
-  // Windows Service Implementation
-  async installWindowsService() {
-    const scriptPath = path.join(__dirname, this.options.script);
-    const serviceName = '9router-watchdog';
-    const description = '9router Protocol Killer Watchdog';
-
-    const workingDirectory = typeof this.options.workingDirectory === 'string'
-      ? this.options.workingDirectory
-      : process.cwd().replace(/\\/g, '\\\\');
-
-    const psScript = `
-      $serviceName = '${serviceName}';
-      $displayName = '9router Protocol Killer Watchdog';
-      $description = 'Persistent 9router Protocol Killer Watchdog';
-      $binaryPath = '${scriptPath}';
-      $workingDirectory = '${workingDirectory}';
-
-      # Create service if it doesn't exist
-      $existingService = Get-Service $serviceName -ErrorAction SilentlyContinue;
-      if ($existingService) {
-        Write-Host "Service already exists. Removing...";
-        Stop-Service -Name $serviceName -Force;
-        Remove-Service -Name $serviceName -Force;
-      }
-
-      # Create new service
-      $serviceArgs = New-Object System.ServiceProcess.Installer.ServiceInstaller;
-      $serviceArgs.ServiceName = $serviceName;
-      $serviceArgs.DisplayName = $displayName;
-      $serviceArgs.Description = $description;
-      $serviceArgs.BinaryPathName = "$binaryPath --watch";
-      $serviceArgs.StartType = [System.ServiceProcess.Installer.ServiceStartMode]::Automatic;
-      $serviceArgs.ServicesDependedOn = @();
-
-      $installer = New-Object System.ServiceProcess.Installer.ServiceController;
-      $installer.Install($serviceArgs);
-
-      Write-Host "Windows service installed successfully: $serviceName";
-    `;
-
-    await this.runPowerShellScript(psScript);
-  }
-
-  async uninstallWindowsService() {
-    const serviceName = '9router-watchdog';
-
-    const psScript = `
-      $serviceName = '${serviceName}';
-      $existingService = Get-Service $serviceName -ErrorAction SilentlyContinue;
-      if ($existingService) {
-        Stop-Service -Name $serviceName -Force;
-        Remove-Service -Name $serviceName -Force;
-        Write-Host "Windows service uninstalled successfully: $serviceName";
+      if (ps.includes('watchdog')) {
+        console.log('   ✅ Watchdog process is running');
       } else {
-        Write-Host "Service not found: $serviceName";
+        console.log('   ⚠️  Watchdog not running (will start on next logon)');
       }
-    `;
-
-    await this.runPowerShellScript(psScript);
+    } catch {
+      console.log('   ⚠️  Could not check processes');
+    }
   }
 
-  // macOS Service Implementation
-  async installMacOSService() {
-    const plistPath = '/Library/LaunchDaemons/com.claude.9router-watchdog.plist';
+  // === WINDOWS ===
+  installWindows() {
+    const startupPath = path.join(
+      process.env.APPDATA,
+      'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup'
+    );
+    const batPath = path.join(startupPath, '9router-protocal-killer.bat');
+    
+    const batchContent = `@echo off
+cd /d "${path.dirname(WATCHDOG_SCRIPT)}"
+node watchdog.js --watch
+`;
+    
+    fs.writeFileSync(batPath, batchContent, 'utf8');
+    console.log('✅ Created startup file:');
+    console.log('   ' + batPath);
+  }
+
+  uninstallWindows() {
+    const startupPath = path.join(
+      process.env.APPDATA,
+      'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup'
+    );
+    const batPath = path.join(startupPath, '9router-protocal-killer.bat');
+    
+    if (fs.existsSync(batPath)) {
+      fs.unlinkSync(batPath);
+      console.log('✅ Removed startup file');
+    } else {
+      console.log('ℹ️  Startup file not found');
+    }
+  }
+
+  statusWindows() {
+    const startupPath = path.join(
+      process.env.APPDATA,
+      'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup'
+    );
+    const batPath = path.join(startupPath, '9router-protocal-killer.bat');
+    
+    if (fs.existsSync(batPath)) {
+      console.log('   ✅ Auto-start is ENABLED');
+      console.log('   📁 ' + batPath);
+    } else {
+      console.log('   ⚠️  Auto-start is NOT installed');
+      console.log('   Run: node bin/service.js --install');
+    }
+  }
+
+  // === macOS ===
+  installMac() {
+    const plistPath = path.join(
+      process.env.HOME,
+      'Library', 'LaunchAgents', 'com.9router-protocal-killer.plist'
+    );
 
     const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.claude.9router-watchdog</string>
+    <string>com.9router-protocal-killer</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${process.execPath}</string>
-        <string>${path.join(__dirname, this.options.script)}</string>
+        <string>/usr/local/bin/node</string>
+        <string>${WATCHDOG_SCRIPT}</string>
         <string>--watch</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>${this.options.workingDirectory || process.cwd()}</string>
+    <string>${path.dirname(WATCHDOG_SCRIPT)}</string>
     <key>KeepAlive</key>
     <true/>
     <key>RunAtLoad</key>
     <true/>
-    <key>StartInterval</key>
-    <integer>60</integer>
-    <key>StandardOutPath</key>
-    <string>/var/log/9router-watchdog.log</string>
-    <key>StandardErrorPath</key>
-    <string>/var/log/9router-watchdog.error.log</string>
 </dict>
 </plist>`;
 
+    fs.mkdirSync(path.dirname(plistPath), { recursive: true });
     fs.writeFileSync(plistPath, plistContent, 'utf8');
 
-    await this.runCommand('launchctl', ['load', plistPath]);
-
-    console.log('macOS LaunchDaemon installed successfully');
-  }
-
-  async uninstallMacOSService() {
-    const plistPath = '/Library/LaunchDaemons/com.claude.9router-watchdog.plist';
-
-    if (fs.existsSync(plistPath)) {
-      await this.runCommand('launchctl', ['unload', plistPath]);
-      fs.unlinkSync(plistPath);
-      console.log('macOS LaunchDaemon uninstalled successfully');
+    try {
+      execSync(`launchctl unload "${plistPath}" 2>/dev/null || true`);
+      execSync(`launchctl load "${plistPath}"`);
+      console.log('✅ macOS LaunchAgent installed');
+    } catch (error) {
+      console.error('❌ Failed:', error.message);
     }
   }
 
-  // Linux Service Implementation
-  async installLinuxService() {
-    const servicePath = '/etc/systemd/system/9router-watchdog.service';
+  uninstallMac() {
+    const plistPath = path.join(
+      process.env.HOME,
+      'Library', 'LaunchAgents', 'com.9router-protocal-killer.plist'
+    );
+    
+    if (fs.existsSync(plistPath)) {
+      execSync(`launchctl unload "${plistPath}" 2>/dev/null || true`);
+      fs.unlinkSync(plistPath);
+      console.log('✅ macOS LaunchAgent removed');
+    }
+  }
+
+  statusMac() {
+    const plistPath = path.join(
+      process.env.HOME,
+      'Library', 'LaunchAgents', 'com.9router-protocal-killer.plist'
+    );
+    
+    if (fs.existsSync(plistPath)) {
+      console.log('   ✅ Auto-start is ENABLED');
+    } else {
+      console.log('   ⚠️  Auto-start is NOT installed');
+    }
+  }
+
+  // === LINUX ===
+  installLinux() {
+    const servicePath = '/etc/systemd/system/9router-protocal-killer.service';
 
     const serviceContent = `[Unit]
 Description=9router Protocol Killer Watchdog
@@ -268,143 +209,83 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=${this.options.workingDirectory || process.cwd()}
-ExecStart=${process.execPath} ${path.join(__dirname, this.options.script)} --watch
+ExecStart=/usr/bin/node ${WATCHDOG_SCRIPT} --watch
+WorkingDirectory=${path.dirname(WATCHDOG_SCRIPT)}
 Restart=always
 RestartSec=10
-StandardOutput=syslog
-StandardError=syslog
-SyslogIdentifier=9router-watchdog
 
 [Install]
 WantedBy=multi-user.target
 `;
 
-    fs.writeFileSync(servicePath, serviceContent, 'utf8');
-
-    await this.runCommand('systemctl', ['daemon-reload']);
-    await this.runCommand('systemctl', ['enable', '9router-watchdog.service']);
-
-    console.log('Linux systemd service installed successfully');
-  }
-
-  async uninstallLinuxService() {
-    const servicePath = '/etc/systemd/system/9router-watchdog.service';
-
-    if (fs.existsSync(servicePath)) {
-      await this.runCommand('systemctl', ['stop', '9router-watchdog.service']);
-      await this.runCommand('systemctl', ['disable', '9router-watchdog.service']);
-      fs.unlinkSync(servicePath);
-
-      await this.runCommand('systemctl', ['daemon-reload']);
-      console.log('Linux systemd service uninstalled successfully');
-    }
-  }
-
-  async runPowerShellScript(script) {
-    return new Promise((resolve, reject) => {
-      const childProcess = require('child_process').spawn('powershell', [
-        '-ExecutionPolicy', 'Bypass',
-        '-Command', script
-      ], {
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
-
-      let output = '';
-
-      childProcess.stdout.on('data', (data) => {
-        output += data.toString();
-      });
-
-      childProcess.stderr.on('data', (data) => {
-        output += data.toString();
-      });
-
-      childProcess.on('close', (code) => {
-        if (code === 0) {
-          resolve(output);
-        } else {
-          reject(new Error(`PowerShell script failed with code ${code}: ${output}`));
-        }
-      });
-    });
-  }
-
-  async runCommand(command, args) {
-    return new Promise((resolve, reject) => {
-      const childProcess = require('child_process').spawn(command, args, {
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
-
-      let output = '';
-
-      childProcess.stdout.on('data', (data) => {
-        output += data.toString();
-      });
-
-      childProcess.stderr.on('data', (data) => {
-        output += data.toString();
-      });
-
-      childProcess.on('close', (code) => {
-        if (code === 0) {
-          resolve(output);
-        } else {
-          reject(new Error(`Command failed with code ${code}: ${output}`));
-        }
-      });
-    });
-  }
-
-  log(level, message) {
-    const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] [${level}] [ServiceWrapper] ${message}`);
-  }
-}
-
-module.exports = ServiceWrapper;
-
-// CLI entry point
-if (require.main === module) {
-  (async () => {
-    const service = new ServiceWrapper({
-      workingDirectory: process.argv[2] || process.cwd(),
-      script: process.argv[3] || 'watchdog.js',
-      args: process.argv[4] || '--watch'
-    });
-
     try {
-      const command = process.argv.find(arg => arg.startsWith('--command='))?.split('=')[1];
-
-      switch (command) {
-        case 'install':
-          await service.install();
-          break;
-        case 'uninstall':
-          await service.uninstall();
-          break;
-        case 'start':
-          await service.start();
-          break;
-        case 'stop':
-          await service.stop();
-          break;
-        case 'status':
-          console.log(JSON.stringify(service.getStatus(), null, 2));
-          break;
-        default:
-          console.log('Usage:');
-          console.log('  --command=install    Install as system service');
-          console.log('  --command=uninstall  Uninstall system service');
-          console.log('  --command=start      Start service');
-          console.log('  --command=stop       Stop service');
-          console.log('  --command=status     Show service status');
-          break;
-      }
+      fs.writeFileSync(servicePath, serviceContent, 'utf8');
+      execSync('systemctl daemon-reload');
+      execSync('systemctl enable 9router-protocal-killer.service');
+      console.log('✅ Linux systemd service installed');
     } catch (error) {
-      console.error('Service operation failed:', error.message);
-      process.exit(1);
+      console.error('❌ Failed:', error.message);
     }
-  })();
+  }
+
+  uninstallLinux() {
+    const servicePath = '/etc/systemd/system/9router-protocal-killer.service';
+    
+    try {
+      execSync('systemctl stop 9router-protocal-killer.service 2>/dev/null || true');
+      execSync('systemctl disable 9router-protocal-killer.service 2>/dev/null || true');
+      if (fs.existsSync(servicePath)) fs.unlinkSync(servicePath);
+      execSync('systemctl daemon-reload');
+      console.log('✅ Linux service removed');
+    } catch (error) {
+      console.error('❌ Failed:', error.message);
+    }
+  }
+
+  statusLinux() {
+    try {
+      execSync('systemctl is-enabled 9router-protocal-killer.service');
+      console.log('   ✅ Auto-start is ENABLED');
+    } catch {
+      console.log('   ⚠️  Auto-start is NOT installed');
+    }
+  }
 }
+
+// === CLI ===
+function printHelp() {
+  console.log(`
+🛡️  9router Protocol Killer - Auto-Start
+
+Usage:
+  node bin/service.js --install      Enable auto-start on logon
+  node bin/service.js --uninstall    Disable auto-start
+  node bin/service.js --status       Check if auto-start is enabled
+
+What it does:
+  Sets up the watchdog to start automatically when you log in.
+  This ensures infections are detected and deleted 24/7.
+`);
+}
+
+// === MAIN ===
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  const service = new AutoStartService();
+
+  if (args.includes('--help') || args.includes('-h') || args.length === 0) {
+    printHelp();
+  } else if (args.includes('--install') || args.includes('-i')) {
+    service.install();
+  } else if (args.includes('--uninstall') || args.includes('-u')) {
+    service.uninstall();
+  } else if (args.includes('--status') || args.includes('-s')) {
+    service.status();
+  } else {
+    console.error('Unknown command:', args.join(' '));
+    printHelp();
+    process.exit(1);
+  }
+}
+
+module.exports = AutoStartService;
