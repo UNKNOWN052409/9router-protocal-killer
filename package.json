@@ -4,13 +4,32 @@
   "description": "Watchdog that detects and removes the chunked write protocol from 9router installations",
   "main": "watchdog.js",
   "bin": {
-    "9router-protocal-killer": "./watchdog.js"
+    "9router-protocal-killer": "watchdog.js"
   },
   "scripts": {
     "start": "node watchdog.js --watch",
     "scan": "node watchdog.js --scan",
     "help": "node watchdog.js --help"
   },
-  "keywords": ["9router", "watchdog", "protocol", "monitor"],
-  "license": "MIT"
+  "keywords": [
+    "9router",
+    "watchdog",
+    "protocol",
+    "monitor"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/UNKNOWN052409/9router-protocal-killer.git"
+  },
+  "author": "",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/UNKNOWN052409/9router-protocal-killer/issues"
+  },
+  "homepage": "https://github.com/UNKNOWN052409/9router-protocal-killer#readme",
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "typescript": "^6.0.3"
+  }
 }
