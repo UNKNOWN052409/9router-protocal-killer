@@ -105,7 +105,7 @@ function findJsFiles(dirPath, maxDepth = 10) {
         if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
           queue.push({ dir: full, depth: depth + 1 });
         }
-      } else if (entry.name.endsWith('.js')) {
+      } else if (entry.name.endsWith('.js') && entry.name !== 'watchdog.js') {
         results.push(full);
       }
     }
