@@ -15,23 +15,38 @@ const os = require('os');
 // === PATTERNS ===
 
 const PROTOCOL_SIGNATURES = [
-  // Original exact patterns
+  // ---- Original exact patterns ----
   /CRITICAL:\s*CHUNKED\s*WRITE\s*PROTOCOL(?!\s*\/)/i,
   /CHUNKED\s*WRITE\s*PROTOCOL\s*\(MANDATORY\)/i,
-  /MAXIMUM\s+350\s+LINES/i,
   /MANDATORY\s+CHUNKED\s+WRITE\s+STRATEGY/i,
 
-  // New variant: plain text description (user reported)
+  // ---- New variants: plain text descriptions (user reported) ----
   // Use \s* between words to avoid matching own regex literals in source
   /never\s*writing\s*more\s*than\s*350\s*lines\s*in\s*a\s*single\s*operation/i,
   /preferring\s*surgical\s*edits\s*over\s*bulk\s*operations/i,
 
-  // Loose multi-word matches (3-word chunks)
+  // ---- Latest reported: ABSOLUTE LIMITS block ----
+  /MAXIMUM\s+350\s+LINES\s+per\s+single\s+write/i,
+  /RECOMMENDED\s+300\s+LINES\s+or\s+less/i,
+  /NEVER\s+write\s+entire\s+files\s+in\s+one\s+operation/i,
+  /Write\s+initial\s+chunk\s*\(?first\s+250/i,
+  /Append\s+remaining\s+content\s+in\s+250/i,
+  /Use\s+surgical\s+edits\s*-\s*change\s+ONLY/i,
+  /Split\s+large\s+refactors\s+into\s+multiple\s+small/i,
+
+  // ---- CRITICAL: Always create NEW commits ----
+  /CRITICAL:\s*Always\s+create\s+NEW\s+commits/i,
+  /CRITICAL:\s*Always\s+create\s+new\s+commits\s+rather\s+than\s+amending/i,
+
+  // ---- Loose multi-word matches (3-word chunks) ----
   /chunk\s+written\s+protocal/i,
   /chunk\s+write\s+350\s/i,
 
-  // Generic: "write more than N lines" instructions
+  // ---- Generic catch-alls ----
   /write(?:n)?\s+more\s+than\s+\d+\s+lines/i,
+  /\d{2,4}\s+lines\s+per\s+single\s+write/i,
+  /surgical\s+edits?\s*-\s*change/i,
+  /ABSOLUTE\s+LIMITS?:?\s*-\s*MAXIMUM/i,
 ];
 
 // === CROSS-PLATFORM 9ROUTER PATH DETECTION ===
@@ -93,7 +108,7 @@ function get9routerPaths() {
 
 // === FILE DISCOVERY ===
 
-function findJsFiles(dirPath, maxDepth = 10) {
+function findTargetFilesByExt(dirPath, exts, maxDepth = 10) {
   const results = [];
   const queue = [{ dir: dirPath, depth: 0 }];
   const seen = new Set();
@@ -118,7 +133,7 @@ function findJsFiles(dirPath, maxDepth = 10) {
         if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
           queue.push({ dir: full, depth: depth + 1 });
         }
-      } else if (entry.name.endsWith('.js') && entry.name !== 'watchdog.js') {
+      } else if (exts.some(ext => entry.name.endsWith(ext)) && entry.name !== 'watchdog.js') {
         results.push(full);
       }
     }
@@ -127,8 +142,13 @@ function findJsFiles(dirPath, maxDepth = 10) {
   return results;
 }
 
+function findJsFiles(dirPath, maxDepth = 10) {
+  return findTargetFilesByExt(dirPath, ['.js'], maxDepth);
+}
+
 function findTargetFiles(basePath) {
   const results = [];
+  const exts = ['.js', '.json', '.md'];
 
   // Priority directories (where the protocol typically lives)
   const priorityDirs = [
@@ -136,6 +156,7 @@ function findTargetFiles(basePath) {
     'app/.next/server/chunks',
     'app/.next-cli-build',
     'app/src',
+    'app/logs',          // translator logs
     'app',
     'src',
   ];
@@ -143,13 +164,13 @@ function findTargetFiles(basePath) {
   for (const dir of priorityDirs) {
     const full = path.join(basePath, dir);
     if (fs.existsSync(full)) {
-      results.push(...findJsFiles(full));
+      results.push(...findTargetFilesByExt(full, exts));
     }
   }
 
   // If nothing found, scan the whole base
   if (results.length === 0) {
-    results.push(...findJsFiles(basePath));
+    results.push(...findTargetFilesByExt(basePath, exts));
   }
 
   return [...new Set(results)];

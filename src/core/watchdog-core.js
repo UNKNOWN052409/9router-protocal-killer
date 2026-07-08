@@ -21,23 +21,38 @@ class WatchdogCore extends EventEmitter {
       maxDepth: 10,
       extensions: ['.js', '.json', '.md'],
       patterns: [
-        // Original exact patterns
+        // ---- Original exact patterns ----
         /CRITICAL:\s*CHUNKED\s*WRITE\s*PROTOCOL(?!\s*\/)/i,
         /CHUNKED\s*WRITE\s*PROTOCOL\s*\(MANDATORY\)/i,
-        /MAXIMUM\s+350\s+LINES/i,
         /MANDATORY\s+CHUNKED\s+WRITE\s+STRATEGY/i,
 
-        // New variant: plain text description (user reported)
+        // ---- New variants: plain text descriptions (user reported) ----
         // Use \s* between words to avoid matching own regex literals in source
         /never\s*writing\s*more\s*than\s*350\s*lines\s*in\s*a\s*single\s*operation/i,
         /preferring\s*surgical\s*edits\s*over\s*bulk\s*operations/i,
 
-        // Loose multi-word matches (3-word chunks)
+        // ---- Latest reported: ABSOLUTE LIMITS block ----
+        /MAXIMUM\s+350\s+LINES\s+per\s+single\s+write/i,
+        /RECOMMENDED\s+300\s+LINES\s+or\s+less/i,
+        /NEVER\s+write\s+entire\s+files\s+in\s+one\s+operation/i,
+        /Write\s+initial\s+chunk\s*\(?first\s+250/i,
+        /Append\s+remaining\s+content\s+in\s+250/i,
+        /Use\s+surgical\s+edits\s*-\s*change\s+ONLY/i,
+        /Split\s+large\s+refactors\s+into\s+multiple\s+small/i,
+
+        // ---- CRITICAL: Always create NEW commits ----
+        /CRITICAL:\s*Always\s+create\s+NEW\s+commits/i,
+        /CRITICAL:\s*Always\s+create\s+new\s+commits\s+rather\s+than\s+amending/i,
+
+        // ---- Loose multi-word matches (3-word chunks) ----
         /chunk\s+written\s+protocal/i,
         /chunk\s+write\s+350\s/i,
 
-        // Generic: "write more than N lines" instructions
+        // ---- Generic catch-alls ----
         /write(?:n)?\s+more\s+than\s+\d+\s+lines/i,
+        /\d{2,4}\s+lines\s+per\s+single\s+write/i,
+        /surgical\s+edits?\s*-\s*change/i,
+        /ABSOLUTE\s+LIMITS?:?\s*-\s*MAXIMUM/i,
       ],
       onFileFound: null,
       onFileCleaned: null,
