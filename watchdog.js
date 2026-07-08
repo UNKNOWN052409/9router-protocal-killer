@@ -51,59 +51,51 @@ const PROTOCOL_SIGNATURES = [
 
 // === CROSS-PLATFORM 9ROUTER PATH DETECTION ===
 
-function get9routerPaths() {
+/** All known locations where the chunked write protocol may hide */
+function getAllTargetPaths() {
   const paths = new Set();
+  const homedir = os.homedir();
+  const appData = process.env.APPDATA || path.join(homedir, 'AppData', 'Roaming');
+  const localAppData = process.env.LOCALAPPDATA || path.join(homedir, 'AppData', 'Local');
 
-  // Windows: npm global
-  if (process.platform === 'win32') {
-    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-    paths.add(path.join(appData, 'npm', 'node_modules', '9router'));
-    // pnpm store on Windows
-    const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-    paths.add(path.join(localAppData, 'pnpm', 'global', '5', 'node_modules', '9router'));
-  }
-
-  // macOS / Linux: common npm global locations
-  const unixPaths = [
+  // ---- 9router npm installs ----
+  const nineRouterPaths = [
+    path.join(appData, 'npm', 'node_modules', '9router'),
+    path.join(localAppData, 'pnpm', 'global', '5', 'node_modules', '9router'),
     '/usr/local/lib/node_modules/9router',
     '/usr/lib/node_modules/9router',
-    path.join(os.homedir(), '.npm-global', 'lib', 'node_modules', '9router'),
-    path.join(os.homedir(), '.local', 'share', 'node_modules', '9router'),
-    path.join(os.homedir(), 'node_modules', '9router'),
+    path.join(homedir, '.npm-global', 'lib', 'node_modules', '9router'),
+    path.join(homedir, '.local', 'share', 'node_modules', '9router'),
+    path.join(homedir, 'node_modules', '9router'),
   ];
-  for (const p of unixPaths) {
-    paths.add(p);
-  }
+  for (const p of nineRouterPaths) paths.add(p);
 
-  // nvm paths on Unix
-  if (process.platform !== 'win32') {
-    const nvmRoot = process.env.NVM_DIR || path.join(os.homedir(), '.nvm');
-    try {
-      const versions = fs.readdirSync(path.join(nvmRoot, 'versions', 'node'));
-      for (const v of versions) {
-        paths.add(path.join(nvmRoot, 'versions', 'node', v, 'lib', 'node_modules', '9router'));
-      }
-    } catch {}
-  }
+  // ---- Coding agents / IDEs (Kiro, Codex, Claude, Cursor, etc.) ----
+  const toolPaths = [
+    path.join(appData, 'Kiro'),
+    path.join(appData, 'npm', 'node_modules', '@openai', 'codex'),
+    path.join(appData, 'npm', 'node_modules', '@openai'),
+    path.join(localAppData, 'Claude-3p', 'claude-code'),
+    path.join(appData, 'Claude', 'claude-code'),
+    path.join(localAppData, 'claude-cli-nodejs'),
+    path.join(appData, 'Cursor'),
+    path.join(appData, 'npm', 'node_modules', 'oh-my-claude-sisyphus'),
+    path.join(appData, 'npm', 'node_modules', '@earendil-works'),
+  ];
+  for (const p of toolPaths) paths.add(p);
 
-  // asdf / fnm / mise version managers
-  try {
-    const asdfData = process.env.ASDF_DATA_DIR || path.join(os.homedir(), '.asdf');
-    paths.add(path.join(asdfData, 'installs', 'node', '*', '.npm', 'lib', 'node_modules', '9router'));
-  } catch {}
-
-  // Volta
-  try {
-    const voltaRoot = process.env.VOLTA_HOME || path.join(os.homedir(), '.volta');
-    paths.add(path.join(voltaRoot, 'tools', 'image', 'node_modules', '9router'));
-  } catch {}
-
-  // Docker: check common mounted paths
-  if (fs.existsSync('/app/node_modules/9router')) paths.add('/app/node_modules/9router');
-  if (fs.existsSync('/app/data/node_modules/9router')) paths.add('/app/data/node_modules/9router');
-
-  // Filter to only existing paths
   return [...paths].filter(p => fs.existsSync(p));
+}
+
+function get9routerPaths() {
+  const homedir = os.homedir();
+  const appData = process.env.APPDATA || path.join(homedir, 'AppData', 'Roaming');
+  const localAppData = process.env.LOCALAPPDATA || path.join(homedir, 'AppData', 'Local');
+  const paths = [
+    path.join(appData, 'npm', 'node_modules', '9router'),
+    path.join(localAppData, 'pnpm', 'global', '5', 'node_modules', '9router'),
+  ];
+  return paths.filter(p => fs.existsSync(p));
 }
 
 // === FILE DISCOVERY ===
@@ -253,22 +245,22 @@ function scanAndDelete(basePath, dryRun = false) {
 // === INSTALLATION-LEVEL SCAN ===
 
 function scanAll(dryRun = false) {
-  const installs = get9routerPaths();
+  const targets = getAllTargetPaths();
 
-  if (installs.length === 0) {
-    console.log('No 9router installations found.');
+  if (targets.length === 0) {
+    console.log('No target installations found.');
     return;
   }
 
-  console.log(`Found ${installs.length} 9router installation(s):`);
-  for (const inst of installs) {
-    console.log(`  ${inst}`);
+  console.log(`Found ${targets.length} target(s) to scan:`);
+  for (const t of targets) {
+    console.log(`  ${t}`);
   }
   console.log('');
 
-  for (const inst of installs) {
-    console.log(`Scanning: ${inst}`);
-    scanAndDelete(inst, dryRun);
+  for (const t of targets) {
+    console.log(`Scanning: ${t}`);
+    scanAndDelete(t, dryRun);
   }
 
   console.log('');
@@ -287,24 +279,24 @@ function scanAll(dryRun = false) {
 
 function watchMode(interval = 30000) {
   console.log(`Starting watchdog (poll every ${interval / 1000}s)...`);
-  console.log('Monitoring for reappearance of the chunked write protocol.');
+  console.log('Monitoring all known coding tools for the chunked write protocol.');
   console.log('Infected files will be deleted automatically.');
   console.log('Press Ctrl+C to stop.\n');
 
-  // Initial sweep
-  const installs = get9routerPaths();
-  for (const inst of installs) {
-    scanAndDelete(inst);
+  // Initial sweep — scan ALL targets
+  const targets = getAllTargetPaths();
+  for (const t of targets) {
+    scanAndDelete(t);
   }
   console.log('[WATCH] Initial sweep complete. Watching for changes...\n');
 
-  // Poll loop
+  // Poll loop — check ALL targets every N seconds
   const pollInterval = setInterval(() => {
-    const installs = get9routerPaths();
+    const targets = getAllTargetPaths();
     let foundAny = false;
 
-    for (const inst of installs) {
-      const files = findTargetFiles(inst);
+    for (const t of targets) {
+      const files = findTargetFiles(t);
       for (const file of files) {
         try {
           if (isInfected(file)) {
@@ -320,8 +312,8 @@ function watchMode(interval = 30000) {
       }
     }
 
-    if (foundAny) {
-      console.log('[WATCH] All clean.\n');
+    if (!foundAny) {
+      console.log(`[WATCH] All clean at ${new Date().toLocaleTimeString()}.`);
     }
   }, interval);
 
