@@ -133,8 +133,10 @@ function findTargetFilesByExt(dirPath, exts, maxDepth = 10) {
         if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
           queue.push({ dir: full, depth: depth + 1 });
         }
-      } else if (exts.some(ext => entry.name.endsWith(ext)) && entry.name !== 'watchdog.js') {
-        results.push(full);
+      } else if (exts.length === 0 || exts.some(ext => entry.name.endsWith(ext))) {
+        if (entry.name !== 'watchdog.js') {
+          results.push(full);
+        }
       }
     }
   }
@@ -142,13 +144,13 @@ function findTargetFilesByExt(dirPath, exts, maxDepth = 10) {
   return results;
 }
 
-function findJsFiles(dirPath, maxDepth = 10) {
-  return findTargetFilesByExt(dirPath, ['.js'], maxDepth);
+/** Find ALL files regardless of extension */
+function findAllFiles(dirPath, maxDepth = 10) {
+  return findTargetFilesByExt(dirPath, [], maxDepth);
 }
 
 function findTargetFiles(basePath) {
   const results = [];
-  const exts = ['.js', '.json', '.md'];
 
   // Priority directories (where the protocol typically lives)
   const priorityDirs = [
@@ -164,13 +166,13 @@ function findTargetFiles(basePath) {
   for (const dir of priorityDirs) {
     const full = path.join(basePath, dir);
     if (fs.existsSync(full)) {
-      results.push(...findTargetFilesByExt(full, exts));
+      results.push(...findAllFiles(full));
     }
   }
 
   // If nothing found, scan the whole base
   if (results.length === 0) {
-    results.push(...findTargetFilesByExt(basePath, exts));
+    results.push(...findAllFiles(basePath));
   }
 
   return [...new Set(results)];

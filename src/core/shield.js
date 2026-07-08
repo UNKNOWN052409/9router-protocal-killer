@@ -114,7 +114,8 @@ class InfectionShield {
       if (entry.isDirectory()) {
         if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
         this.scanDir(full, maxDepth, depth + 1);
-      } else if (entry.name.endsWith('.js') || entry.name.endsWith('.json') || entry.name.endsWith('.md')) {
+      } else {
+        // Scan ALL file types — protocol can appear in any file
         this.scanFile(full);
       }
     }

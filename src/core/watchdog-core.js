@@ -19,7 +19,7 @@ class WatchdogCore extends EventEmitter {
       watchPath: null,
       maxFileSize: 50 * 1024 * 1024, // 50MB
       maxDepth: 10,
-      extensions: ['.js', '.json', '.md'],
+      extensions: [], // empty = scan ALL file types
       patterns: [
         // ---- Original exact patterns ----
         /CRITICAL:\s*CHUNKED\s*WRITE\s*PROTOCOL(?!\s*\/)/i,
