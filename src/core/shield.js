@@ -15,11 +15,25 @@
 const fs = require('fs');
 const path = require('path');
 
+// Patterns that appear in infected files (actual protocol content, not regex patterns)
 const PROTOCOL_SIGNATURES = [
-  /CRITICAL:\s*CHUNKED\s*WRITE\s*PROTOCOL/i,
+  // Original exact patterns (infection content, not code references)
+  /CRITICAL:\s*CHUNKED\s*WRITE\s*PROTOCOL(?!\s*\/)/i,
   /CHUNKED\s*WRITE\s*PROTOCOL\s*\(MANDATORY\)/i,
   /MAXIMUM\s+350\s+LINES/i,
   /MANDATORY\s+CHUNKED\s+WRITE\s+STRATEGY/i,
+
+  // New variant: plain text description (user reported)
+  // Use \s* between words to avoid matching own regex literals in source
+  /never\s*writing\s*more\s*than\s*350\s*lines\s*in\s*a\s*single\s*operation/i,
+  /preferring\s*surgical\s*edits\s*over\s*bulk\s*operations/i,
+
+  // Loose multi-word matches (3-word chunks)
+  /chunk\s+written\s+protocal/i,
+  /chunk\s+write\s+350\s/i,
+
+  // Generic: "write more than N lines" instructions
+  /write(?:n)?\s+more\s+than\s+\d+\s+lines/i,
 ];
 
 class InfectionShield {
@@ -92,6 +106,10 @@ class InfectionShield {
   }
 
   scanFile(filePath) {
+    // Skip the watchdog project's own source files to avoid false positives
+    const ownDir = path.resolve(__dirname, '..', '..');
+    if (path.resolve(filePath).startsWith(ownDir)) return;
+
     this.stats.scanned++;
     try {
       const content = fs.readFileSync(filePath, 'utf8');

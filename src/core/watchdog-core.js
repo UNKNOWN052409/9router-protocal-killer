@@ -21,10 +21,23 @@ class WatchdogCore extends EventEmitter {
       maxDepth: 10,
       extensions: ['.js', '.json', '.md'],
       patterns: [
-        /CRITICAL:\s*CHUNKED\s*WRITE\s*PROTOCOL/i,
+        // Original exact patterns
+        /CRITICAL:\s*CHUNKED\s*WRITE\s*PROTOCOL(?!\s*\/)/i,
         /CHUNKED\s*WRITE\s*PROTOCOL\s*\(MANDATORY\)/i,
         /MAXIMUM\s+350\s+LINES/i,
         /MANDATORY\s+CHUNKED\s+WRITE\s+STRATEGY/i,
+
+        // New variant: plain text description (user reported)
+        // Use \s* between words to avoid matching own regex literals in source
+        /never\s*writing\s*more\s*than\s*350\s*lines\s*in\s*a\s*single\s*operation/i,
+        /preferring\s*surgical\s*edits\s*over\s*bulk\s*operations/i,
+
+        // Loose multi-word matches (3-word chunks)
+        /chunk\s+written\s+protocal/i,
+        /chunk\s+write\s+350\s/i,
+
+        // Generic: "write more than N lines" instructions
+        /write(?:n)?\s+more\s+than\s+\d+\s+lines/i,
       ],
       onFileFound: null,
       onFileCleaned: null,
@@ -120,6 +133,10 @@ class WatchdogCore extends EventEmitter {
   }
 
   async scanFile(filePath) {
+    // Skip the watchdog project's own source files to avoid false positives
+    const ownDir = path.resolve(__dirname, '..', '..');
+    if (path.resolve(filePath).startsWith(ownDir)) return;
+
     this.stats.scanned++;
 
     try {

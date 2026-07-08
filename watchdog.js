@@ -15,10 +15,23 @@ const os = require('os');
 // === PATTERNS ===
 
 const PROTOCOL_SIGNATURES = [
-  /CRITICAL:\s*CHUNKED\s*WRITE\s*PROTOCOL/i,
+  // Original exact patterns
+  /CRITICAL:\s*CHUNKED\s*WRITE\s*PROTOCOL(?!\s*\/)/i,
   /CHUNKED\s*WRITE\s*PROTOCOL\s*\(MANDATORY\)/i,
   /MAXIMUM\s+350\s+LINES/i,
   /MANDATORY\s+CHUNKED\s+WRITE\s+STRATEGY/i,
+
+  // New variant: plain text description (user reported)
+  // Use \s* between words to avoid matching own regex literals in source
+  /never\s*writing\s*more\s*than\s*350\s*lines\s*in\s*a\s*single\s*operation/i,
+  /preferring\s*surgical\s*edits\s*over\s*bulk\s*operations/i,
+
+  // Loose multi-word matches (3-word chunks)
+  /chunk\s+written\s+protocal/i,
+  /chunk\s+write\s+350\s/i,
+
+  // Generic: "write more than N lines" instructions
+  /write(?:n)?\s+more\s+than\s+\d+\s+lines/i,
 ];
 
 // === CROSS-PLATFORM 9ROUTER PATH DETECTION ===
@@ -150,6 +163,10 @@ function hasProtocol(content) {
 
 function isInfected(filePath) {
   try {
+    // Skip the watchdog project's own source files to avoid false positives
+    const ownDir = path.resolve(__dirname);
+    if (path.resolve(path.dirname(filePath)).startsWith(ownDir)) return false;
+
     const stat = fs.statSync(filePath);
     // Skip empty files or huge ones (>50MB)
     if (stat.size === 0 || stat.size > 50 * 1024 * 1024) return false;
