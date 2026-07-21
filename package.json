@@ -1,7 +1,7 @@
 {
   "name": "9router-protocal-killer",
-  "version": "1.0.0",
-  "description": "Watchdog that detects and removes the chunked write protocol from 9router installations",
+  "version": "2.0.0",
+  "description": "Safe watchdog that surgically removes the chunked write protocol from files without deleting them. Prevents 9router crashes.",
   "main": "watchdog.js",
   "bin": {
     "9router-protocal-killer": "watchdog.js"
@@ -22,7 +22,8 @@
     "type": "git",
     "url": "git+https://github.com/UNKNOWN052409/9router-protocal-killer.git"
   },
-  "author": "",
+  "author": "UNKNOWN052409",
+  "funding": "https://github.com/UNKNOWN052409/9router-protocal-killer",}]}
   "type": "commonjs",
   "bugs": {
     "url": "https://github.com/UNKNOWN052409/9router-protocal-killer/issues"

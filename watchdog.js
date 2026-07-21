@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 /**
- * 9router Protocol Killer — Watchdog
+ * 9router Protocol Killer — Watchdog (v2 — SAFE CLEAN mode)
  *
- * Cross-platform watchdog that detects files containing the
- * "CRITICAL: CHUNKED WRITE PROTOCOL (MANDATORY)" text and DELETES them.
+ * Cross-platform watchdog that detects and SURGICALLY REMOVES the
+ * "CRITICAL: CHUNKED WRITE PROTOCOL (MANDATORY)" text from files.
+ *
+ * DEFAULT BEHAVIOR: CLEAN (regex strip the protocol text, preserve everything else)
+ * OLD BEHAVIOR:     --delete flag (whole-file deletion, use with caution)
  *
  * Works on: Windows, macOS, Linux
  */
@@ -11,21 +14,23 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const ProtocolProxy = require('./src/core/protocol-proxy');
 
-// === PATTERNS ===
+// ═══════════════════════════════════════════════════════════════════════════════
+// PROTOCOL PATTERNS — precise-only, no false-positive catch-alls
+// ═══════════════════════════════════════════════════════════════════════════════
 
 const PROTOCOL_SIGNATURES = [
-  // ---- Original exact patterns ----
+  // ---- Core unique phrases ----
   /CRITICAL:\s*CHUNKED\s*WRITE\s*PROTOCOL(?!\s*\/)/i,
   /CHUNKED\s*WRITE\s*PROTOCOL\s*\(MANDATORY\)/i,
   /MANDATORY\s+CHUNKED\s+WRITE\s+STRATEGY/i,
 
-  // ---- New variants: plain text descriptions (user reported) ----
-  // Use \s* between words to avoid matching own regex literals in source
-  /never\s*writing\s*more\s*than\s*350\s*lines\s*in\s*a\s*single\s*operation/i,
-  /preferring\s*surgical\s*edits\s*over\s*bulk\s*operations/i,
+  // ---- Variant spellings (user reported) ----
+  /chunk\s+written\s+protocal/i,
+  /chunk\s+write\s+350\s/i,
 
-  // ---- Latest reported: ABSOLUTE LIMITS block ----
+  // ---- ABSOLUTE LIMITS block (specific only) ----
   /MAXIMUM\s+350\s+LINES\s+per\s+single\s+write/i,
   /RECOMMENDED\s+300\s+LINES\s+or\s+less/i,
   /NEVER\s+write\s+entire\s+files\s+in\s+one\s+operation/i,
@@ -34,24 +39,38 @@ const PROTOCOL_SIGNATURES = [
   /Use\s+surgical\s+edits\s*-\s*change\s+ONLY/i,
   /Split\s+large\s+refactors\s+into\s+multiple\s+small/i,
 
+  // ---- Plain-text descriptions ----
+  /never\s*writing\s*more\s*than\s*350\s*lines\s*in\s*a\s*single\s*operation/i,
+  /preferring\s*surgical\s*edits\s*over\s*bulk\s*operations/i,
+
   // ---- CRITICAL: Always create NEW commits ----
   /CRITICAL:\s*Always\s+create\s+NEW\s+commits/i,
   /CRITICAL:\s*Always\s+create\s+new\s+commits\s+rather\s+than\s+amending/i,
 
-  // ---- Loose multi-word matches (3-word chunks) ----
-  /chunk\s+written\s+protocal/i,
-  /chunk\s+write\s+350\s/i,
-
-  // ---- Generic catch-alls ----
-  /write(?:n)?\s+more\s+than\s+\d+\s+lines/i,
-  /\d{2,4}\s+lines\s+per\s+single\s+write/i,
-  /surgical\s+edits?\s*-\s*change/i,
-  /ABSOLUTE\s+LIMITS?:?\s*-\s*MAXIMUM/i,
+  // ---- ABSOLUTE LIMITS header (tight anchor) ----
+  /ABSOLUTE\s+LIMITS:?\s*-\s*MAXIMUM\s+350/i,
 ];
 
-// === CROSS-PLATFORM 9ROUTER PATH DETECTION ===
+// ═══════════════════════════════════════════════════════════════════════════════
+// SAFE FILE FILTERS — prevent scanning binaries or irrelevant dirs
+// ═══════════════════════════════════════════════════════════════════════════════
 
-/** All known locations where the chunked write protocol may hide */
+const SAFE_EXTENSIONS = new Set([
+  '.js', '.ts', '.mjs', '.cjs', '.jsx', '.tsx',
+  '.json', '.md', '.yaml', '.yml', '.txt', '.py',
+  '.sh', '.bat', '.ps1', '.env', '.cfg', '.conf',
+  '.html', '.css', '.xml',
+]);
+
+const EXCLUDED_DIRS = new Set([
+  'node_modules', '.git', '.next', '.next-cli-build',
+  'logs', 'test-output', 'coverage', 'dist', '.cache',
+]);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CROSS-PLATFORM 9ROUTER PATH DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
 function getAllTargetPaths() {
   const paths = new Set();
   const homedir = os.homedir();
@@ -70,7 +89,7 @@ function getAllTargetPaths() {
   ];
   for (const p of nineRouterPaths) paths.add(p);
 
-  // ---- Coding agents / IDEs (Kiro, Codex, Claude, Cursor, etc.) ----
+  // ---- Coding agents / IDEs ----
   const toolPaths = [
     path.join(appData, 'Kiro'),
     path.join(appData, 'npm', 'node_modules', '@openai', 'codex'),
@@ -98,9 +117,36 @@ function get9routerPaths() {
   return paths.filter(p => fs.existsSync(p));
 }
 
-// === FILE DISCOVERY ===
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILE DISCOVERY — extension & directory safe
+// ═══════════════════════════════════════════════════════════════════════════════
 
-function findTargetFilesByExt(dirPath, exts, maxDepth = 10) {
+function isSafeTargetFile(entry, fullPath) {
+  const ext = path.extname(entry.name).toLowerCase();
+  if (ext && !SAFE_EXTENSIONS.has(ext)) return false;
+  return true;
+}
+
+function isExcludedDir(dirName) {
+  return EXCLUDED_DIRS.has(dirName) || dirName.startsWith('.');
+}
+
+function isBinaryFile(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(512);
+    const bytesRead = fs.readSync(fd, buffer, 0, 512, 0);
+    fs.closeSync(fd);
+    for (let i = 0; i < bytesRead; i++) {
+      if (buffer[i] === 0) return true; // null byte → binary
+    }
+    return false;
+  } catch {
+    return true; // treat unreadable as binary to be safe
+  }
+}
+
+function findTargetFiles(dirPath, maxDepth = 10) {
   const results = [];
   const queue = [{ dir: dirPath, depth: 0 }];
   const seen = new Set();
@@ -121,56 +167,36 @@ function findTargetFilesByExt(dirPath, exts, maxDepth = 10) {
 
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
+
       if (entry.isDirectory()) {
-        if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
+        if (!isExcludedDir(entry.name)) {
           queue.push({ dir: full, depth: depth + 1 });
         }
-      } else if (exts.length === 0 || exts.some(ext => entry.name.endsWith(ext))) {
-        if (entry.name !== 'watchdog.js') {
-          results.push(full);
-        }
+        continue;
       }
+
+      if (!entry.isFile()) continue;
+
+      // Skip non-safe extensions
+      if (!isSafeTargetFile(entry, full)) continue;
+
+      // Skip non-text binary files
+      if (isBinaryFile(full)) continue;
+
+      // Skip the watchdog project's own files to avoid false positives
+      const ownDir = path.resolve(__dirname);
+      if (path.resolve(path.dirname(full)).startsWith(ownDir)) continue;
+
+      results.push(full);
     }
   }
 
   return results;
 }
 
-/** Find ALL files regardless of extension */
-function findAllFiles(dirPath, maxDepth = 10) {
-  return findTargetFilesByExt(dirPath, [], maxDepth);
-}
-
-function findTargetFiles(basePath) {
-  const results = [];
-
-  // Priority directories (where the protocol typically lives)
-  const priorityDirs = [
-    'app/.next-cli-build/server/chunks',
-    'app/.next/server/chunks',
-    'app/.next-cli-build',
-    'app/src',
-    'app/logs',          // translator logs
-    'app',
-    'src',
-  ];
-
-  for (const dir of priorityDirs) {
-    const full = path.join(basePath, dir);
-    if (fs.existsSync(full)) {
-      results.push(...findAllFiles(full));
-    }
-  }
-
-  // If nothing found, scan the whole base
-  if (results.length === 0) {
-    results.push(...findAllFiles(basePath));
-  }
-
-  return [...new Set(results)];
-}
-
-// === DETECTION ===
+// ═══════════════════════════════════════════════════════════════════════════════
+// DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
 
 function hasProtocol(content) {
   return PROTOCOL_SIGNATURES.some(sig => sig.test(content));
@@ -178,12 +204,7 @@ function hasProtocol(content) {
 
 function isInfected(filePath) {
   try {
-    // Skip the watchdog project's own source files to avoid false positives
-    const ownDir = path.resolve(__dirname);
-    if (path.resolve(path.dirname(filePath)).startsWith(ownDir)) return false;
-
     const stat = fs.statSync(filePath);
-    // Skip empty files or huge ones (>50MB)
     if (stat.size === 0 || stat.size > 50 * 1024 * 1024) return false;
     const content = fs.readFileSync(filePath, 'utf8');
     return hasProtocol(content);
@@ -192,24 +213,87 @@ function isInfected(filePath) {
   }
 }
 
-// === DELETE THE INFECTED FILE ===
+// ═══════════════════════════════════════════════════════════════════════════════
+// CLEAN (default) — surgically strip protocol text, preserve everything else
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function cleanFile(filePath) {
+  try {
+    let content = fs.readFileSync(filePath, 'utf8');
+    const original = content;
+
+    for (const sig of PROTOCOL_SIGNATURES) {
+      content = content.replace(sig, '');
+    }
+
+    if (content === original) return false; // nothing changed
+
+    // Only clean up triple+ newlines — never collapse JSON/single-line content
+    if (content.includes('\n')) {
+      content = content.replace(/\n{3,}/g, '\n\n');
+    }
+
+    fs.writeFileSync(filePath, content, 'utf8');
+    return true;
+  } catch (err) {
+    console.error(`  [ERROR] Could not clean: ${filePath} — ${err.message}`);
+    return false;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DELETE (legacy, opt-in via --delete flag) — removes whole file
+// ═══════════════════════════════════════════════════════════════════════════════
 
 function deleteFile(filePath) {
   try {
     fs.unlinkSync(filePath);
     return true;
   } catch (err) {
+    console.error(`  [ERROR] Could not delete: ${filePath} — ${err.message}`);
     return false;
   }
 }
 
-// === STATS ===
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATS
+// ═══════════════════════════════════════════════════════════════════════════════
 
-const stats = { scanned: 0, infected: 0, deleted: 0, errors: 0 };
+const stats = { scanned: 0, infected: 0, cleaned: 0, deleted: 0, errors: 0 };
 
-// === SCAN & DELETE ===
+// ═══════════════════════════════════════════════════════════════════════════════
+// SCAN & CLEAN (default) / DELETE (with --delete flag)
+// ═══════════════════════════════════════════════════════════════════════════════
 
-function scanAndDelete(basePath, dryRun = false) {
+function processInfectedFile(filePath, deleteMode, dryRun = false) {
+  stats.infected++;
+
+  if (dryRun) {
+    console.log(`  [FOUND] ${filePath}`);
+    return true;
+  }
+
+  if (deleteMode) {
+    if (deleteFile(filePath)) {
+      stats.deleted++;
+      console.log(`  [DELETED] ${filePath}`);
+      return true;
+    }
+    stats.errors++;
+    return false;
+  }
+
+  // DEFAULT: CLEAN mode
+  if (cleanFile(filePath)) {
+    stats.cleaned++;
+    console.log(`  [CLEANED] ${filePath}`);
+    return true;
+  }
+  stats.errors++;
+  return false;
+}
+
+function scanTarget(basePath, deleteMode = false, dryRun = false) {
   const files = findTargetFiles(basePath);
   let found = false;
 
@@ -217,34 +301,19 @@ function scanAndDelete(basePath, dryRun = false) {
     stats.scanned++;
     if (!isInfected(file)) continue;
 
-    stats.infected++;
-    found = true;
-
-    if (dryRun) {
-      console.log(`  [FOUND] ${file}`);
-      continue;
-    }
-
-    try {
-      if (deleteFile(file)) {
-        stats.deleted++;
-        console.log(`  [DELETED] ${file}`);
-      } else {
-        stats.errors++;
-        console.error(`  [ERROR] Could not delete: ${file}`);
-      }
-    } catch (err) {
-      stats.errors++;
-      console.error(`  [ERROR] ${file}: ${err.message}`);
+    if (processInfectedFile(file, deleteMode, dryRun)) {
+      found = true;
     }
   }
 
   return found;
 }
 
-// === INSTALLATION-LEVEL SCAN ===
+// ═══════════════════════════════════════════════════════════════════════════════
+// INSTALLATION-LEVEL SCAN
+// ═══════════════════════════════════════════════════════════════════════════════
 
-function scanAll(dryRun = false) {
+function scanAll(deleteMode = false, dryRun = false) {
   const targets = getAllTargetPaths();
 
   if (targets.length === 0) {
@@ -258,39 +327,53 @@ function scanAll(dryRun = false) {
   }
   console.log('');
 
+  const modeLabel = dryRun ? 'DRY RUN' : deleteMode ? 'DELETE' : 'CLEAN';
+  console.log(`Mode: ${modeLabel}\n`);
+
   for (const t of targets) {
     console.log(`Scanning: ${t}`);
-    scanAndDelete(t, dryRun);
+    scanTarget(t, deleteMode, dryRun);
   }
 
   console.log('');
   console.log('=== Summary ===');
   console.log(`  Scanned:  ${stats.scanned} files`);
   console.log(`  Infected: ${stats.infected} files`);
+  console.log(`  Cleaned:  ${stats.cleaned} files`);
   console.log(`  Deleted:  ${stats.deleted} files`);
   console.log(`  Errors:   ${stats.errors} files`);
 
-  if (stats.infected > 0 && stats.deleted === stats.infected && stats.errors === 0) {
-    console.log('\nAll infected files have been eliminated.');
+  if (deleteMode && stats.infected > 0 && stats.deleted === stats.infected && stats.errors === 0) {
+    console.log('\nAll infected files have been deleted.');
+  } else if (!deleteMode && stats.infected > 0 && stats.cleaned === stats.infected && stats.errors === 0) {
+    console.log('\nAll infected files have been cleaned (protocol text stripped, files preserved).');
+  } else if (stats.infected === 0) {
+    console.log('\nNo infections found — all clear.');
   }
 }
 
-// === WATCH MODE ===
+// ═══════════════════════════════════════════════════════════════════════════════
+// WATCH MODE
+// ═══════════════════════════════════════════════════════════════════════════════
 
-function watchMode(interval = 30000) {
+function watchMode(interval = 30000, deleteMode = false) {
+  const modeLabel = deleteMode ? 'DELETE' : 'CLEAN (safe)';
   console.log(`Starting watchdog (poll every ${interval / 1000}s)...`);
+  console.log(`Mode: ${modeLabel}`);
   console.log('Monitoring all known coding tools for the chunked write protocol.');
-  console.log('Infected files will be deleted automatically.');
+  console.log(deleteMode
+    ? 'Infected files will be DELETED automatically (legacy mode).'
+    : 'Infected files will be CLEANED automatically (protocol text stripped, files preserved).');
   console.log('Press Ctrl+C to stop.\n');
 
-  // Initial sweep — scan ALL targets
+  // Initial sweep
   const targets = getAllTargetPaths();
   for (const t of targets) {
-    scanAndDelete(t);
+    scanTarget(t, deleteMode);
   }
   console.log('[WATCH] Initial sweep complete. Watching for changes...\n');
 
-  // Poll loop — check ALL targets every N seconds
+  // Poll loop
   const pollInterval = setInterval(() => {
     const targets = getAllTargetPaths();
     let foundAny = false;
@@ -301,11 +384,16 @@ function watchMode(interval = 30000) {
         try {
           if (isInfected(file)) {
             console.log(`[WATCH] Protocol detected in: ${file}`);
-            if (deleteFile(file)) {
-              console.log(`[WATCH] Deleted: ${file}`);
-              foundAny = true;
+            if (deleteMode) {
+              if (deleteFile(file)) {
+                console.log(`[WATCH] Deleted: ${file}`);
+                foundAny = true;
+              }
             } else {
-              console.error(`[WATCH] Failed to delete: ${file}`);
+              if (cleanFile(file)) {
+                console.log(`[WATCH] Cleaned: ${file}`);
+                foundAny = true;
+              }
             }
           }
         } catch {}
@@ -329,24 +417,45 @@ function watchMode(interval = 30000) {
   });
 }
 
-// === CLI ===
+// ═══════════════════════════════════════════════════════════════════════════════
+// CLI
+// ═══════════════════════════════════════════════════════════════════════════════
 
 function printHelp() {
   console.log(`
-9router Protocol Killer — Watchdog
-====================================
-Deletes files containing the "CRITICAL: CHUNKED WRITE PROTOCOL" text.
+9router Protocol Killer — Watchdog v2 (SAFE CLEAN MODE)
+=========================================================
+
+DEFAULT behavior: SURGICALLY STRIP the protocol text from infected files.
+Files are PRESERVED — only the protocol content is removed.
+This prevents 9router crashes caused by deleting essential build files.
 
 Usage:
-  node watchdog.js --scan        Scan and delete infected files
-  node watchdog.js --watch       Watch mode (polls every 30s)
-  node watchdog.js --dry-run     Scan without deleting
-  node watchdog.js --path <dir>  Scan a specific directory
-  node watchdog.js --help        Show this help
+  node watchdog.js              Scan and CLEAN infected files (safe default)
+  node watchdog.js --scan       Same as above
+  node watchdog.js --watch      Watch mode (polls every 30s)
+  node watchdog.js --dry-run    Scan only, no modifications
+  node watchdog.js --delete     DELETE infected files entirely (use with caution!)
+  node watchdog.js --path <dir> Scan a specific directory
+  node watchdog.js --help       Show this help
 
 Options:
-  --interval <ms>   Poll interval in ms (watch mode, default: 30000)
-  --path <dir>      Scan a specific directory instead of auto-detecting
+  --delete        OLD behavior: delete whole files (was causing 9router crashes)
+  --interval <ms> Poll interval in ms (watch mode, default: 30000)
+  --path <dir>    Scan a specific directory instead of auto-detecting
+  --proxy         Start MITM protocol proxy (intercepts live API responses)
+  --proxy-port <p>  Proxy listen port (default: 20129)
+  --upstream <h:p>  9router upstream host:port (default: localhost:20128)
+
+What gets scanned:
+  - Safe file types: .js .ts .json .md .yaml .txt .py .sh .html .css (+ more)
+  - Excluded dirs: node_modules, .git, .next, logs, test-output, etc.
+  - Binary files are automatically skipped
+  - Own project files are automatically skipped
+
+What gets cleaned:
+  Only text matching known CHUNKED WRITE PROTOCOL patterns.
+  All other file content is 100% preserved.
 
 Cross-platform: Works on Windows, macOS, and Linux.
   `);
@@ -371,15 +480,38 @@ function main() {
     };
   }
 
+  const deleteMode = args.includes('--delete');
   const dryRun = args.includes('--dry-run');
+
+  const startProxy = args.includes('--proxy');
+  const proxyPortIdx = args.indexOf('--proxy-port');
+  const proxyPort = proxyPortIdx >= 0 ? parseInt(args[proxyPortIdx + 1]) || 20129 : 20129;
+  const upstreamIdx = args.indexOf('--upstream');
+  let upstreamHost = 'localhost';
+  let upstreamPort = 20128;
+  if (upstreamIdx >= 0 && args[upstreamIdx + 1]) {
+    const parts = args[upstreamIdx + 1].split(':');
+    upstreamHost = parts[0] || 'localhost';
+    upstreamPort = parseInt(parts[1]) || 20128;
+  }
+
+  if (startProxy) {
+    const proxy = new ProtocolProxy({ proxyPort, upstreamHost, upstreamPort, verbose: true });
+    proxy.start().then(() => {
+      console.log(`  Proxy on :${proxyPort} → ${upstreamHost}:${upstreamPort}`);
+      console.log(`  Configure your AI agent to use http://localhost:${proxyPort}`);
+    });
+  }
 
   if (args.includes('--watch') || args.includes('-w')) {
     const intervalIdx = args.indexOf('--interval');
     const interval = intervalIdx >= 0 ? parseInt(args[intervalIdx + 1]) || 30000 : 30000;
-    watchMode(interval);
-  } else {
-    scanAll(dryRun);
+    watchMode(interval, deleteMode);
+  } else if (!startProxy) {
+    scanAll(deleteMode, dryRun);
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}

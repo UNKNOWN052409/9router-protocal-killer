@@ -1,8 +1,8 @@
 <div align="center">
 
-# 🛡️ 9router Protocol Killer
+# 🛡️ 9router Protocol Killer v2
 
-**Automated watchdog that detects and ELIMINATES the chunked write protocol from 9router installations.**
+**Safe-mode watchdog that surgically REMOVES the chunked write protocol from infected files without deleting them.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
@@ -12,152 +12,143 @@
 
 ---
 
-## ⚠️ IMPORTANT: How It Works
+## ✅ v2 — What Changed?
 
-| Command | What Happens |
-|---------|--------------|
-| `node watchdog.js --scan` | **SCAN + DELETE** — Finds infected files and **DELETES them immediately** |
-| `node watchdog.js --dry-run` | **SCAN ONLY** — Shows infected files but does NOT delete |
-| `node watchdog.js --watch` | **AUTO-DELETE** — Runs forever, deletes infections every 30 seconds |
+| Problem | v1 (old) | v2 (this version) |
+|---------|----------|-------------------|
+| **Default action** | `fs.unlinkSync()` — DELETED entire files | **CLEAN** — surgically strips protocol text, preserves file |
+| **9router crashes** | ❌ Yes — deleting chunk files broke 9router | ✅ No — files are intact, only protocol text removed |
+| **File scanning** | Scanned ALL file types (huge overhead) | Restricted to safe extensions (.js, .json, .md, .py, etc.) |
+| **Binary files** | Scanned binaries (wasted time) | Auto-skipped with null-byte detection |
+| **Pattern precision** | Included generic catch-alls causing false positives | Precision-only patterns matched to known protocol variants |
+| **--delete flag** | N/A | Added for users who want the old whole-file-deletion behavior |
 
-> 🚨 **Running `--scan` WILL DELETE infected files.** Use `--dry-run` first to preview what will be removed.
-
----
-
-## 📋 Table of Contents
-
-- [Quick Start](#-quick-start)
-- [Auto-Start Setup](#-auto-start-setup)
-- [Commands](#-commands)
-- [Features](#-features)
-- [Installation](#-installation)
-- [Testing](#-testing)
-- [Why This Exists](#-why-this-exists)
+**v2 is 100% backward compatible.** The `--delete` flag restores v1 behavior.
 
 ---
 
 ## 🚀 Quick Start
 
-### Delete All Infections (One-Time Cleanup)
+### Safe Clean (Default — RECOMMENDED)
 
 ```bash
-# ⚡ SCAN AND DELETE all infected files
+# 🔧 SCAN AND CLEAN — strips protocol text, KEEPS your files
 node watchdog.js --scan
 ```
 
 **Example output:**
 ```
-Scanning: C:\Users\You\AppData\Roaming\npm\node_modules\9router
-  [DELETED] C:\...\8833.js
+Mode: CLEAN
+
+Scanning: C:\...\npm\node_modules\9router
+  [CLEANED] C:\...\8833.js      ← Protocol removed, FILE KEPT
 
 === Summary ===
-  Scanned:  614 files
+  Scanned:  1410 files
   Infected: 1 files
-  Deleted:  1 files    ← File was DELETED
+  Cleaned:  1 files    ← File was CLEANED, NOT deleted
+  Deleted:  0 files
   Errors:   0 files
-
-All infected files have been eliminated.
 ```
 
-### Preview Before Deleting (Safe Mode)
+### Preview Before Cleaning (Dry Run)
 
 ```bash
-# 👀 See what would be deleted WITHOUT deleting
+# 👀 See what would be cleaned WITHOUT modifying anything
 node watchdog.js --dry-run
 ```
 
-**Example output:**
-```
-Scanning: C:\Users\You\AppData\Roaming\npm\node_modules\9router
-  [FOUND] C:\...\8833.js      ← Found but NOT deleted
-
-=== Summary ===
-  Scanned:  614 files
-  Infected: 1 files
-  Deleted:  0 files    ← Nothing deleted (dry-run)
-  Errors:   0 files
-```
-
-### Continuous Auto-Protection
+### Delete Entire Files (Old Behavior — Use With Caution)
 
 ```bash
-# 🔄 Run forever, auto-delete new infections
-node watchdog.js --watch
-```
-
----
-
-## 🖥️ Auto-Start Setup
-
-**Want the watchdog to start automatically when 9router runs?** Use the auto-start service:
-
-### Windows (PowerShell)
-
-```powershell
-# Run as Administrator
-node bin/service.js --install
-```
-
-This creates a Windows Scheduled Task that:
-- ✅ Starts when 9router starts
-- ✅ Runs in the background
-- ✅ Auto-restarts if it crashes
-- ✅ Scans every 30 seconds
-
-### Manual Auto-Start (Without Service)
-
-Add to your PowerShell profile (`$PROFILE`):
-
-```powershell
-# Add to $PROFILE
-Start-Process -NoNewWindow -FilePath "node" -ArgumentList "C:\path\to\watchdog.js --watch"
-```
-
-### Check Service Status
-
-```bash
-node bin/service.js --status
-```
-
-### Uninstall Service
-
-```bash
-node bin/service.js --uninstall
+# ⚠️ DELETES infected files entirely (may crash 9router)
+node watchdog.js --delete
 ```
 
 ---
 
 ## 📟 Commands
 
-| Command | Effect | Deletes Files? |
-|---------|--------|----------------|
-| `node watchdog.js --scan` | Scan all 9router installations | ✅ **YES** |
-| `node watchdog.js --dry-run` | Preview infected files only | ❌ No |
-| `node watchdog.js --watch` | Continuous monitoring | ✅ **YES** (every 30s) |
-| `node watchdog.js --path <dir>` | Scan specific directory | Depends on flag |
-| `node watchdog.js --help` | Show help | N/A |
+| Command | Effect | Safe? |
+|---------|--------|-------|
+| `node watchdog.js` or `--scan` | Scan and **CLEAN** protocol text from files | ✅ Yes — files preserved |
+| `node watchdog.js --delete` | Scan and **DELETE** infected files | ⚠️ May crash 9router |
+| `node watchdog.js --dry-run` | Preview only — no changes | ✅ Safe |
+| `node watchdog.js --watch` | Continuous monitoring (CLEAN mode) | ✅ Yes |
+| `node watchdog.js --delete --watch` | Continuous DELETE mode | ⚠️ Caution |
+| `node watchdog.js --watch --proxy` | Watch + MITM Proxy combined | ✅ Yes |
+| `node watchdog.js --path <dir>` | Scan specific directory | ✅ Depends on mode |
+| `node watchdog.js --help` | Show help | ✅ Safe |
 
 ### Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
+| `--delete` | DELETE infected files entirely (v1 behavior) | Off (CLEAN mode) |
 | `--interval <ms>` | Poll interval in watch mode | 30000 (30s) |
 | `--path <dir>` | Scan specific directory | Auto-detect |
+| `--proxy` | Start MITM protocol proxy | Off |
+| `--proxy-port <p>` | Proxy listen port | 20129 |
+| `--upstream <h:p>` | 9router host:port | localhost:20128 |
 
 ### Examples
 
 ```bash
-# Quick cleanup
-node watchdog.js --scan
+# Safe cleanup (CLEAN — recommended)
+node watchdog.js
 
 # Safe preview
 node watchdog.js --dry-run
+
+# DELETE mode (old behavior — use with caution)
+node watchdog.js --delete
+
+# Watch with clean mode
+node watchdog.js --watch
+
+# Watch with delete mode
+node watchdog.js --delete --watch
 
 # Watch with custom interval (every 10 seconds)
 node watchdog.js --watch --interval 10000
 
 # Scan specific folder
-node watchdog.js --scan --path "C:\my\9router\install"
+node watchdog.js --path "C:\my\9router\install"
+```
+
+---
+
+## 🛡️ MITM Protocol Proxy (Intercept LIVE Responses)
+
+The protocol isn't just in **files on disk** — it can be injected **LIVE through 9router's API responses**.
+The protocol proxy sits BETWEEN your AI agent and 9router, intercepting ALL HTTP traffic
+and stripping the chunked write protocol text from responses **before** they reach your agent.
+
+```bash
+# Start the proxy (standalone)
+node src/core/protocol-proxy.js
+
+# Start proxy with watchdog watch mode
+node watchdog.js --watch --proxy
+
+# Custom port
+node watchdog.js --proxy --proxy-port 20129
+```
+
+**Architecture:**
+```
+Your AI Agent (pi/codex/claude)
+        │
+        ▼  http://localhost:20129
+┌─────────────────────┐
+│  Protocol Proxy     │  ← Strips protocol text from ALL responses
+│  (port 20129)       │     including SSE streaming chunks
+└────────┬────────────┘
+         ▼  http://localhost:20128
+┌─────────────────────┐
+│  9router Server     │
+│  (port 20128)       │
+└─────────────────────┘
 ```
 
 ---
@@ -166,12 +157,13 @@ node watchdog.js --scan --path "C:\my\9router\install"
 
 | Feature | Description |
 |---|---|
-| 🔍 **Auto-Detect** | Finds 9router via npm global, nvm, asdf, Volta, pnpm, Docker |
-| 🗑️ **Auto-Delete** | Deletes infected files immediately when found |
-| 👁️ **Watch Mode** | Polls every 30s, kills reinfections automatically |
+| 🔧 **Safe Clean (Default)** | Strips protocol text — files stay intact, 9router won't crash |
+| 🗑️ **Legacy Delete Mode** | `--delete` flag for old behavior (use with caution) |
+| 👁️ **Watch Mode** | Polls every 30s, removes reinfections automatically |
 | 🛡️ **Infection Shield** | Prevents protocol from being written in the first place |
+| 🔒 **Binary Skip** | Auto-detects and skips non-text files |
+| 🧩 **Extension Filter** | Only scans safe file types (.js, .json, .md, .py, etc.) |
 | 🖥️ **Cross-Platform** | Windows, macOS, and Linux |
-| ⚙️ **Auto-Start** | Install as a service that starts with 9router |
 
 ---
 
@@ -185,20 +177,8 @@ cd 9router-protocal-killer
 # Install dependencies
 npm install
 
-# Run cleanup
-node watchdog.js --scan
-```
-
----
-
-## 🛡️ Infection Shield
-
-Runtime protection that intercepts file writes:
-
-```js
-const Shield = require('./src/core/shield');
-const shield = new Shield();
-shield.activate();   // All fs writes now protected
+# Run safe cleanup
+node watchdog.js
 ```
 
 ---
@@ -217,10 +197,10 @@ node test-end-to-end.js
 
 ## 🤔 Why This Exists
 
-Some AI coding assistants enforce a **"Chunked Write Protocol"** — text injected into files that limits edits to 350 lines. This tool:
+Some AI coding assistants enforce a **"Chunked Write Protocol"** — text injected into files that limits edits to 350 lines. This text causes internal errors in 9router. This tool:
 
 1. **Detects** the protocol text in infected files
-2. **Deletes** those files immediately
+2. **Cleans** it (or optionally deletes the file)
 3. **Prevents** reinfection with the Infection Shield
 
 ---

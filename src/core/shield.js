@@ -15,19 +15,32 @@
 const fs = require('fs');
 const path = require('path');
 
+// Safe file extensions to scan (skip binaries)
+const SAFE_EXTENSIONS = new Set([
+  '.js', '.ts', '.mjs', '.cjs', '.jsx', '.tsx',
+  '.json', '.md', '.yaml', '.yml', '.txt', '.py',
+  '.sh', '.bat', '.ps1', '.env', '.cfg', '.conf',
+  '.html', '.css', '.xml',
+]);
+
+const EXCLUDED_DIRS = new Set([
+  'node_modules', '.git', '.next', '.next-cli-build',
+  'logs', 'test-output', 'coverage', 'dist', '.cache',
+]);
+
 // Patterns that appear in infected files (actual protocol content, not regex patterns)
+// Precision-only: no generic catch-alls that could cause false positives
 const PROTOCOL_SIGNATURES = [
-  // ---- Original exact patterns ----
+  // ---- Core unique phrases ----
   /CRITICAL:\s*CHUNKED\s*WRITE\s*PROTOCOL(?!\s*\/)/i,
   /CHUNKED\s*WRITE\s*PROTOCOL\s*\(MANDATORY\)/i,
   /MANDATORY\s+CHUNKED\s+WRITE\s+STRATEGY/i,
 
-  // ---- New variants: plain text descriptions (user reported) ----
-  // Use \s* between words to avoid matching own regex literals in source
-  /never\s*writing\s*more\s*than\s*350\s*lines\s*in\s*a\s*single\s*operation/i,
-  /preferring\s*surgical\s*edits\s*over\s*bulk\s*operations/i,
+  // ---- Variant spellings (user reported) ----
+  /chunk\s+written\s+protocal/i,
+  /chunk\s+write\s+350\s/i,
 
-  // ---- Latest reported: ABSOLUTE LIMITS block ----
+  // ---- ABSOLUTE LIMITS block (specific only) ----
   /MAXIMUM\s+350\s+LINES\s+per\s+single\s+write/i,
   /RECOMMENDED\s+300\s+LINES\s+or\s+less/i,
   /NEVER\s+write\s+entire\s+files\s+in\s+one\s+operation/i,
@@ -36,19 +49,16 @@ const PROTOCOL_SIGNATURES = [
   /Use\s+surgical\s+edits\s*-\s*change\s+ONLY/i,
   /Split\s+large\s+refactors\s+into\s+multiple\s+small/i,
 
+  // ---- Plain-text descriptions ----
+  /never\s*writing\s*more\s*than\s*350\s*lines\s*in\s*a\s*single\s*operation/i,
+  /preferring\s*surgical\s*edits\s*over\s*bulk\s*operations/i,
+
   // ---- CRITICAL: Always create NEW commits ----
   /CRITICAL:\s*Always\s+create\s+NEW\s+commits/i,
   /CRITICAL:\s*Always\s+create\s+new\s+commits\s+rather\s+than\s+amending/i,
 
-  // ---- Loose multi-word matches (3-word chunks) ----
-  /chunk\s+written\s+protocal/i,
-  /chunk\s+write\s+350\s/i,
-
-  // ---- Generic catch-alls ----
-  /write(?:n)?\s+more\s+than\s+\d+\s+lines/i,
-  /\d{2,4}\s+lines\s+per\s+single\s+write/i,
-  /surgical\s+edits?\s*-\s*change/i,
-  /ABSOLUTE\s+LIMITS?:?\s*-\s*MAXIMUM/i,
+  // ---- ABSOLUTE LIMITS header (tight anchor) ----
+  /ABSOLUTE\s+LIMITS:?\s*-\s*MAXIMUM\s+350/i,
 ];
 
 class InfectionShield {
@@ -126,6 +136,13 @@ class InfectionShield {
     const ownDir = path.resolve(__dirname, '..', '..');
     if (path.resolve(filePath).startsWith(ownDir)) return;
 
+    // Check file extension
+    const ext = path.extname(filePath).toLowerCase();
+    if (ext && !SAFE_EXTENSIONS.has(ext)) return;
+
+    // Skip if binary
+    if (this.isBinaryFile(filePath)) return;
+
     this.stats.scanned++;
     try {
       const content = fs.readFileSync(filePath, 'utf8');
@@ -137,6 +154,21 @@ class InfectionShield {
       }
     } catch {
       // skip unreadable files
+    }
+  }
+
+  isBinaryFile(filePath) {
+    try {
+      const fd = fs.openSync(filePath, 'r');
+      const buffer = Buffer.alloc(512);
+      const bytesRead = fs.readSync(fd, buffer, 0, 512, 0);
+      fs.closeSync(fd);
+      for (let i = 0; i < bytesRead; i++) {
+        if (buffer[i] === 0) return true;
+      }
+      return false;
+    } catch {
+      return true;
     }
   }
 
@@ -203,7 +235,12 @@ class InfectionShield {
     for (const sig of PROTOCOL_SIGNATURES) {
       cleaned = cleaned.replace(sig, '');
     }
-    return cleaned.replace(/\n{3,}/g, '\n\n').trim();
+    // Only strip triple+ newlines if the content actually has newlines
+    // This prevents corrupting single-line JSON files
+    if (cleaned.includes('\n')) {
+      cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+    }
+    return cleaned;
   }
 
   getStatus() {

@@ -19,19 +19,18 @@ class WatchdogCore extends EventEmitter {
       watchPath: null,
       maxFileSize: 50 * 1024 * 1024, // 50MB
       maxDepth: 10,
-      extensions: [], // empty = scan ALL file types
+      extensions: ['.js', '.ts', '.mjs', '.cjs', '.jsx', '.tsx', '.json', '.md', '.yaml', '.yml', '.txt', '.py', '.sh', '.bat', '.ps1', '.env', '.html', '.css', '.xml'],
       patterns: [
-        // ---- Original exact patterns ----
+        // ---- Core unique phrases ----
         /CRITICAL:\s*CHUNKED\s*WRITE\s*PROTOCOL(?!\s*\/)/i,
         /CHUNKED\s*WRITE\s*PROTOCOL\s*\(MANDATORY\)/i,
         /MANDATORY\s+CHUNKED\s+WRITE\s+STRATEGY/i,
 
-        // ---- New variants: plain text descriptions (user reported) ----
-        // Use \s* between words to avoid matching own regex literals in source
-        /never\s*writing\s*more\s*than\s*350\s*lines\s*in\s*a\s*single\s*operation/i,
-        /preferring\s*surgical\s*edits\s*over\s*bulk\s*operations/i,
+        // ---- Variant spellings (user reported) ----
+        /chunk\s+written\s+protocal/i,
+        /chunk\s+write\s+350\s/i,
 
-        // ---- Latest reported: ABSOLUTE LIMITS block ----
+        // ---- ABSOLUTE LIMITS block (specific only) ----
         /MAXIMUM\s+350\s+LINES\s+per\s+single\s+write/i,
         /RECOMMENDED\s+300\s+LINES\s+or\s+less/i,
         /NEVER\s+write\s+entire\s+files\s+in\s+one\s+operation/i,
@@ -40,19 +39,16 @@ class WatchdogCore extends EventEmitter {
         /Use\s+surgical\s+edits\s*-\s*change\s+ONLY/i,
         /Split\s+large\s+refactors\s+into\s+multiple\s+small/i,
 
+        // ---- Plain-text descriptions ----
+        /never\s*writing\s*more\s*than\s*350\s*lines\s*in\s*a\s*single\s*operation/i,
+        /preferring\s*surgical\s*edits\s*over\s*bulk\s*operations/i,
+
         // ---- CRITICAL: Always create NEW commits ----
         /CRITICAL:\s*Always\s+create\s+NEW\s+commits/i,
         /CRITICAL:\s*Always\s+create\s+new\s+commits\s+rather\s+than\s+amending/i,
 
-        // ---- Loose multi-word matches (3-word chunks) ----
-        /chunk\s+written\s+protocal/i,
-        /chunk\s+write\s+350\s/i,
-
-        // ---- Generic catch-alls ----
-        /write(?:n)?\s+more\s+than\s+\d+\s+lines/i,
-        /\d{2,4}\s+lines\s+per\s+single\s+write/i,
-        /surgical\s+edits?\s*-\s*change/i,
-        /ABSOLUTE\s+LIMITS?:?\s*-\s*MAXIMUM/i,
+        // ---- ABSOLUTE LIMITS header (tight anchor) ----
+        /ABSOLUTE\s+LIMITS:?\s*-\s*MAXIMUM\s+350/i,
       ],
       onFileFound: null,
       onFileCleaned: null,
@@ -191,8 +187,10 @@ class WatchdogCore extends EventEmitter {
         cleanedContent = cleanedContent.replace(pattern, '');
       });
 
-      // Clean up extra whitespace and newlines
-      cleanedContent = cleanedContent.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
+      // Only strip extra whitespace if file actually has newlines (skip single-line JSON)
+      if (cleanedContent.includes('\n')) {
+        cleanedContent = cleanedContent.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
+      }
       if (cleanedContent !== content) {
         await fs.promises.writeFile(filePath, cleanedContent, 'utf8');
         this.stats.cleaned++;
